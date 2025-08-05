@@ -1,0 +1,156 @@
+
+import sys
+import logging
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+
+# Configurar logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Parâmetros do job
+args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
+
+# Nome do banco de dados
+database_name = "seu_banco_de_dados"
+
+def ler_tabela_teste_vazia(database, table_name):
+    """
+    Função para ler a tabela e verificar se está vazia.
+    Retorna o DataFrame ou None se estiver vazia.
+    """
+    df = glueContext.create_dynamic_frame.from_catalog(database=database, table_name=table_name).toDF()
+    if df.rdd.isEmpty():
+        logger.warning(f"Tabela '{table_name}' está vazia. Pulando processamento desta tabela.")
+        return None
+    else:
+        logger.info(f"Tabela '{table_name}' carregada com sucesso.")
+        return df
+
+# Leitura das tabelas com tratamento para vazios
+tabela1 = ler_tabela_teste_vazia(database_name, "tabela1")
+tabela2 = ler_tabela_teste_vazia(database_name, "tabela2")
+tabela3 = ler_tabela_teste_vazia(database_name, "tabela3")
+tabela4 = ler_tabela_teste_vazia(database_name, "tabela4")
+tabela5 = ler_tabela_teste_vazia(database_name, "tabela5")
+tabela6 = ler_tabela_teste_vazia(database_name, "tabela6")
+
+# Lista para as tabelas carregadas
+tabelas_carregadas = []
+
+# Adiciona as tabelas carregadas à lista
+if tabela1 is not None:
+    t1 = tabela1.select("id", "campoA", "campoB")
+    tabelas_carregadas.append(t1)
+if tabela2 is not None:
+    t2 = tabela2.select("id", "campoC")
+    tabelas_carregadas.append(t2)
+if tabela3 is not None:
+    t3 = tabela3.select("id", "campoD")
+    tabelas_carregadas.append(t3)
+if tabela4 is not None:
+    t4 = tabela4.select("id", "campoE")
+    tabelas_carregadas.append(t4)
+if tabela5 is not None:
+    t5 = tabela5.select("id", "campoF")
+    tabelas_carregadas.append(t5)
+if tabela6 is not None:
+    t6 = tabela6.select("id", "campoG")
+    tabelas_carregadas.append(t6)
+
+# Verifica se há pelo menos uma tabela carregada
+if not tabelas_carregadas:
+    logger.warning("Nenhuma tabela carregada. Encerrando o job.")
+else:
+    # Realiza os joins sequenciais
+    from functools import reduce
+    from pyspark.sql import DataFrame
+
+    def join_dfs(df_list):
+        return reduce(lambda df1, df2: df1.join(df2, on="id", how="inner"), df_list)
+
+    df_final = join_dfs(tabelas_carregadas)
+
+    # Opcional: salvar o resultado
+    output_path = "s3://seu-bucket/output/resultado_consolidado.parquet"
+    df_final.write.parquet(output_path)
+    logger.info("Processamento concluído com sucesso.")
+
+# Finaliza o job
+job.commit()
+
+======================================================================================================
+
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.dynamicframe import DynamicFrame
+
+# 🔧 Inicializa os contextos
+args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = glueContext.create_job(args['JOB_NAME'])
+
+# 📥 Função para ler tabela e verificar se está vazia
+def ler_tabela(database, table_name, ctx_name):
+    dyf = glueContext.create_dynamic_frame.from_catalog(
+        database=database,
+        table_name=table_name,
+        transformation_ctx=ctx_name
+    )
+    if dyf.count() == 0:
+        print(f"⚠️ Tabela '{table_name}' está vazia. Ignorando.")
+        return None
+    return dyf.toDF()
+
+# 🧩 Lê as tabelas com tratamento
+df_clientes = ler_tabela("meu_banco", "clientes", "clientes")
+df_pedidos = ler_tabela("meu_banco", "pedidos", "pedidos")
+df_produtos = ler_tabela("meu_banco", "produtos", "produtos")
+df_itens = ler_tabela("meu_banco", "itens_pedido", "itens")
+
+# 🛡️ Verifica se todas as tabelas necessárias estão disponíveis
+if None in [df_clientes, df_pedidos, df_produtos, df_itens]:
+    print("⚠️ Uma ou mais tabelas estão vazias. O job continuará sem processar os dados.")
+else:
+    # 🔗 Realiza os joins
+    df_pedidos_clientes = df_pedidos.join(df_clientes, "id_cliente")
+    df_itens_produtos = df_itens.join(df_produtos, "id_produto")
+    df_final = df_pedidos_clientes.join(df_itens_produtos, "id_pedido")
+
+    # 🎯 Seleciona os campos desejados
+    df_resultado = df_final.select(
+        "id_pedido",
+        "data_pedido",
+        "nome",           # nome do cliente
+        "email",
+        "nome_produto",
+        "quantidade",
+        "preco"
+    )
+
+    # 💾 Converte para DynamicFrame para salvar
+    resultado_dyf = DynamicFrame.fromDF(df_resultado, glueContext, "resultado_dyf")
+
+    # 📤 Salva no S3 em formato Parquet
+    glueContext.write_dynamic_frame.from_options(
+        frame=resultado_dyf,
+        connection_type="s3",
+        connection_options={"path": "s3://meu-bucket-destino/resultado-join/"},
+        format="parquet",
+        transformation_ctx="datasink"
+    )
+
+job.commit()
